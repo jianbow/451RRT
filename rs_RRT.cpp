@@ -19,21 +19,23 @@ namespace plt = matplotlibcpp;
 using namespace std;
 using namespace std::chrono;
 
-double MAX_ITERATION = 16000;
-double MAX_DISTANCE = .25;
+int MAX_ITERATION = 16000;
+double MAX_DISTANCE = .5;
 double GOAL;
+int THREADS = 4;
+
+omp_lock_t writelock;
 
 //obstacles for RRT
-std::vector<double> obsXmin{3, 11};
-std::vector<double> obsYmin{3, 6};
-std::vector<double> obsXmax{7, 18};
-std::vector<double> obsYmax{10, 17};
+std::vector<double> obsXmin{3, 11, 25};
+std::vector<double> obsYmin{3, 6, 20};
+std::vector<double> obsXmax{7, 18,27};
+std::vector<double> obsYmax{10, 17, 25};
 
 //------------------------------------------------------------------------------
 
 struct Node
 {
-
     double posX;
     double posY;
     Node *prev;
@@ -42,30 +44,31 @@ struct Node
 
 //------------------------------------------------------------------------------
 
-class RRT
-{
-
-private:
+typedef struct{
     Node *start;
     Node *goal;
     std::vector<Node *> rrtNodes;
 
-public:
-    RRT(double startX, double startY, double goalX, double goalY)
-    {
 
-        Node *node = new Node;
-        this->start = node;
-        start->posX = startX;
-        start->posY = startY;
-        start->prev = nullptr;
-        rrtNodes.push_back(node);
 
-        node = new Node;
-        this->goal = node;
-        goal->posX = goalX;
-        goal->posY = goalY;
-    }
+} RRT;
+
+
+void init_RRT(RRT& rrt, double startX, double startY, double goalX, double goalY)
+{
+
+    Node *node = new Node;
+    rrt.start = node;
+    rrt.start->posX = startX;
+    rrt.start->posY = startY;
+    rrt.start->prev = nullptr;
+    rrt.rrtNodes.push_back(node);
+
+    node = new Node;
+    rrt.goal = node;
+    rrt.goal->posX = goalX;
+    rrt.goal->posY = goalY;
+}
 
     //------------------------------------------------------------------------------
 
@@ -103,7 +106,7 @@ public:
 
     //------------------------------------------------------------------------------
 
-    void plotRRT()
+    void plotRRT(std::vector<Node*>& rrtNodes)
     {
 
         plt::figure_size(600, 600);
@@ -119,7 +122,7 @@ public:
 
         plt::plot(obsX1, obsY1, "darkblue");
         plt::plot(obsX2, obsY2, "darkblue");
-        // plt::plot(obsX3, obsY3, "darkblue");
+        plt::plot(obsX3, obsY3, "darkblue");
 
         // std::cout << "All nodes:\n";
         for (auto &ii : rrtNodes)
@@ -205,17 +208,19 @@ public:
 
     //------------------------------------------------------------------------------
 
-    Node *checkNearestNode(Node *new_node)
+    std::vector<Node*> checkNearestNode(Node *new_node, std::vector<Node*>& rrtNodes, Node* start, Node* goal, std::vector<Node*>& rrtNodesNext)
     {
 
         std::vector<double> tempX;
         std::vector<double> tempY;
 
-        Node *near_node = new Node;
+        Node *near_node;
         double minDistance = std::numeric_limits<double>::max();
         double corrX = 0.0;
         double corrY = 0.0;
         bool check_obstacle;
+
+        
 
         for (auto &ii : rrtNodes)
         {
@@ -250,7 +255,6 @@ public:
         {
             check_obstacle = checkObstacles(near_node->posX, near_node->posY, corrX, corrY, std::make_tuple(obsXmin, obsYmin, obsXmax, obsYmax));
         }
-
         new_node->posX = corrX;
         new_node->posY = corrY;
 
@@ -270,11 +274,13 @@ public:
         if (check_obstacle == 0)
         {
             // std::cout << " added...";
-            rrtNodes.push_back(new_node);
+
+            rrtNodesNext.push_back(new_node);
+
         }
 
 
-        if (((double)new_node->posX == (double)this->goal->posX) && ((double)new_node->posY == (double)this->goal->posY))
+        if (((double)new_node->posX == (double)goal->posX) && ((double)new_node->posY == (double)goal->posY))
         {
 
             std::cout << "The GOAL achive && GOLD path is ..." << std::endl;
@@ -292,25 +298,42 @@ public:
 
             // printGoalPath(std::make_tuple(tempX, tempY));
         }
+        return rrtNodesNext;
 
-        return new_node;
+        // return new_node;
     }
 
     //------------------------------------------------------------------------------
 
-    double lookForPath()
+    double lookForPath(std::vector<Node*>& rrtNodes, Node* start, Node* goal)
     {
 
         std::random_device dev;
         std::mt19937 rng(dev());
         std::uniform_int_distribution<std::mt19937::result_type> dist100(0, 30); 
-
+        int i, tid;
+        omp_set_num_threads(64);
 
 
         //pragma section
+        omp_init_lock(&writelock);
+
+        std::vector<Node*> rrtNodesNext;
 
 
-        for (double i = 0; i < MAX_ITERATION; i++)
+
+        #pragma omp parallel shared(rrtNodes, start, goal) private(i, tid, rrtNodesNext)
+        {
+
+        
+        tid = omp_get_thread_num();
+        std::cout <<"tid: " << tid << std::endl;
+
+        int chunk = MAX_ITERATION/4;
+
+        // #pragma omp parallel shared(rrtNodes,start,goal,chunk) private(tid)
+        // #pragma omp for schedule(static,chunk)
+        for (i = 0; i < MAX_ITERATION; i++)
         {
             Node *random_node = new Node;
             Node *last_node = new Node;
@@ -320,44 +343,44 @@ public:
             random_node->posX = randX;
             random_node->posY = randY;
 
-            last_node = checkNearestNode(random_node);
+            auto retVal = checkNearestNode(random_node,rrtNodes,start,goal, rrtNodesNext);
+            // std::cout <<"tid: " << tid << " wait reinsert" << std::endl;
+            #pragma omp barrier
+            omp_set_lock(&writelock);
 
-            if (GOAL == 1)
-            {
-                goal->prev = last_node;
-                std::cout << last_node->posX << " :: " << last_node->posY << std::endl;
-
-                return -1;
+            while(!rrtNodesNext.empty()){
+                rrtNodes.push_back(rrtNodesNext.back());
+                rrtNodesNext.pop_back();
             }
+
+            omp_unset_lock(&writelock);
+
+            // std::cout <<"tid: " << tid << " wait next loop" << std::endl;
+
+            #pragma omp barrier
         }
+
+
+
+        }
+
         return 1;
     }
 
-    //------------------------------------------------------------------------------
-
-    void printRRT(RRT &rrt)
-    {
-
-        Node *node = rrt.start;
-        std::cout << node->posX << " : " << node->posY << std::endl;
-        node = rrt.goal;
-        std::cout << node->posX << " : " << node->posY << std::endl;
-    }
-};
 
 //------------------------------------------------------------------------------
 
 int main()
 {
 
-    RRT rrt(10, 10, 27, 27);
-    rrt.printRRT(rrt);
+    RRT rrt;
+    init_RRT(rrt,10, 10, 27, 27);
     auto start = high_resolution_clock::now();
 
 
 
-
-    double checkpath = rrt.lookForPath();
+    
+    lookForPath(rrt.rrtNodes,rrt.start,rrt.goal);
 
     auto stop = high_resolution_clock::now();
     auto duration = duration_cast<microseconds>(stop - start);
@@ -368,6 +391,6 @@ int main()
     std::cout << "RUNTIME in seconds: " <<  t << std::endl;
    
 #ifdef PLOT
-    rrt.plotRRT();
+    plotRRT(rrt.rrtNodes);
 #endif
 }
