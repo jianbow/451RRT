@@ -1,4 +1,6 @@
-### Path_Planning. RRT_algorithm
+### Parallel RRT
 
-Following document is a part of post on Medium and present how to compute collision free path for the planar robot using RRT algorithm.
+2 methods of implementation of parallel RRT algorithms
+
+Serial baseline referenced from this article:
 https://markus-x-buchholz.medium.com/robot-path-planning-rrt-algorithm-d836fb52cb38
